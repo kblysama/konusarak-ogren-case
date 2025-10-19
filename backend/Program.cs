@@ -8,7 +8,21 @@ builder.Services.AddHttpClient();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// CORS desteği ekle
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAll", builder =>
+    {
+        builder.AllowAnyOrigin()
+               .AllowAnyMethod()
+               .AllowAnyHeader();
+    });
+});
+
 var app = builder.Build();
+
+// CORS kullan
+app.UseCors("AllowAll");
 
 // Ensure DB
 using (var scope = app.Services.CreateScope())
@@ -51,9 +65,13 @@ app.MapPost("/message", async (ChatDb db, IHttpClientFactory httpFactory, Messag
     if (string.IsNullOrWhiteSpace(aiUrl)) return Results.Problem("AI_URL not configured");
 
     var client = httpFactory.CreateClient();
-    var res = await client.PostAsJsonAsync($"{aiUrl.TrimEnd('/')}/analyze", new { message = payload.Text });
+    var res = await client.PostAsJsonAsync($"{aiUrl.TrimEnd('/')}", new { data = new[] { payload.Text } });
     if (!res.IsSuccessStatusCode) return Results.Problem("ai-service error");
-    var ai = await res.Content.ReadFromJsonAsync<AIResult>() ?? new AIResult{ sentiment="neutral", score=0 };
+    var aiResponse = await res.Content.ReadFromJsonAsync<GradioResponse>();
+    var ai = new AIResult { 
+        sentiment = aiResponse?.data?[0]?.sentiment ?? "neutral", 
+        score = aiResponse?.data?[0]?.score ?? 0.5 
+    };
 
     var message = new Message
     {
@@ -73,6 +91,8 @@ app.Run();
 
 public record MessageIn(string Nickname, string Text);
 public record AIResult { public string sentiment {get;set;} = "neutral"; public double score {get;set;} = 0; }
+public record GradioResponse { public GradioData[]? data {get;set;} }
+public record GradioData { public string sentiment {get;set;} = "neutral"; public double score {get;set;} = 0; }
 
 public class User
 {

@@ -1,0 +1,31 @@
+{
+  "name": "sentiment-chat-monorepo",
+  "version": "1.0.0",
+  "description": "AI destekli gerçek zamanlı sohbet uygulaması",
+  "scripts": {
+    "test": "node test-integration.js",
+    "dev": "concurrently \"npm run dev:ai\" \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:ai": "cd ai-service && uvicorn app:app --reload --port 8001",
+    "dev:backend": "cd backend && dotnet run",
+    "dev:frontend": "cd frontend && npm run dev",
+    "docker:up": "docker-compose up --build",
+    "docker:down": "docker-compose down",
+    "mobile:install": "cd mobile && npm install",
+    "mobile:android": "cd mobile && npx react-native run-android"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "axios": "^1.6.0"
+  },
+  "keywords": [
+    "ai",
+    "sentiment-analysis",
+    "chat",
+    "react",
+    "react-native",
+    "dotnet",
+    "python"
+  ],
+  "author": "Konuşarak Öğren Case",
+  "license": "MIT"
+}

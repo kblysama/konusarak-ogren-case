@@ -1,9 +1,12 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+import logging
+from functools import lru_cache
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from transformers import pipeline
 import os
 import re
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="Sentiment Analyzer API", version="1.0.0")
 
@@ -16,9 +19,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+logger = logging.getLogger("ai-service")
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+
 # Türkçe metin desteği için daha iyi bir model kullan
 MODEL_NAME = os.getenv("MODEL_NAME", "cardiffnlp/twitter-xlm-roberta-base-sentiment")
-analyzer = pipeline("sentiment-analysis", model=MODEL_NAME)
+
+
+class AnalyzeRequest(BaseModel):
+    message: str = Field(..., min_length=1, description="Analyzed text")
+
+
+class AnalyzeResponse(BaseModel):
+    sentiment: str
+    score: float
+    original_text: str
+    processed_text: str
+
+
+@lru_cache(maxsize=1)
+def get_analyzer():
+    logger.info("Loading sentiment model %s", MODEL_NAME)
+    return pipeline("sentiment-analysis", model=MODEL_NAME)
 
 def preprocess_text(text):
     """Metni ön işleme tabi tut - emojileri ve özel karakterleri temizle"""
@@ -46,45 +68,46 @@ def preprocess_text(text):
 def health():
     return {"ok": True}
 
-@app.post("/analyze")
-async def analyze(request: Request):
+@app.post("/analyze", response_model=AnalyzeResponse)
+async def analyze(payload: AnalyzeRequest):
+    text = payload.message
+
+    # Metni ön işleme tabi tut
+    processed_text = preprocess_text(text)
+
+    if not processed_text:
+        return AnalyzeResponse(
+            sentiment="neutral",
+            score=0.5,
+            original_text=text,
+            processed_text=processed_text,
+        )
+
     try:
-        data = await request.json()
-        text = data.get("message", "")
-        
-        if not text or not isinstance(text, str):
-            return JSONResponse({"error": "message is required"}, status_code=400)
-        
-        # Metni ön işleme tabi tut
-        processed_text = preprocess_text(text)
-        
-        if not processed_text:
-            return JSONResponse({"sentiment": "neutral", "score": 0.5})
-        
-        # Duygu analizi yap
+        analyzer = get_analyzer()
         result = analyzer(processed_text)[0]
-        label = result["label"].lower()
-        score = float(result.get("score", 0.0))
-        
-        # Model çıktılarını standartlaştır
-        if "positive" in label or "joy" in label:
-            sentiment = "positive"
-        elif "negative" in label or "sadness" in label or "anger" in label:
-            sentiment = "negative"
-        else:
-            sentiment = "neutral"
-        
-        # Nötr bant genişletilmiş (0.4-0.6 arası)
-        if 0.4 <= score <= 0.6:
-            sentiment = "neutral"
-        
-        return JSONResponse({
-            "sentiment": sentiment, 
-            "score": score,
-            "original_text": text,
-            "processed_text": processed_text
-        })
-        
-    except Exception as e:
-        print(f"Analiz hatası: {e}")
-        return JSONResponse({"sentiment": "neutral", "score": 0.5})
+    except Exception as exc:
+        logger.exception("Sentiment analysis failed")
+        raise HTTPException(status_code=500, detail="analysis failed") from exc
+
+    label = result["label"].lower()
+    score = float(result.get("score", 0.0))
+
+    # Model çıktılarını standartlaştır
+    if "positive" in label or "joy" in label:
+        sentiment = "positive"
+    elif "negative" in label or "sadness" in label or "anger" in label:
+        sentiment = "negative"
+    else:
+        sentiment = "neutral"
+
+    # Nötr bant genişletilmiş (0.4-0.6 arası)
+    if 0.4 <= score <= 0.6:
+        sentiment = "neutral"
+
+    return AnalyzeResponse(
+        sentiment=sentiment,
+        score=score,
+        original_text=text,
+        processed_text=processed_text,
+    )

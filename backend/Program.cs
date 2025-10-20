@@ -45,7 +45,7 @@ app.MapPost("/register", async (ChatDb db, User user) =>
     return Results.Ok(new { user.Id, user.Nickname });
 });
 app.MapGet("/messages", async (ChatDb db) =>
-{
+{   
     var list = await db.Messages
         .OrderBy(m => m.CreatedAt)
         .ToListAsync();

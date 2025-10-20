@@ -19,15 +19,17 @@ export default function App(){
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }
-
+  async function messageCheck(){
+    if (messages.length > 0) {load}
+  }
   useEffect(()=>{ 
-    load() 
+    messageCheck()
     scrollToBottom()
   }, [messages])
 
   useEffect(()=>{ 
     // Her 2 saniyede bir mesajları yenile
-    const interval = setInterval(load, 2000)
+    const interval = setInterval(load, 200000)
     return () => clearInterval(interval)
   }, [])
 

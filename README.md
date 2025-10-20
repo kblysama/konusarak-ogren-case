@@ -112,7 +112,7 @@ index.html: Vite’in #root kapsayıcısını ve src/main.jsx giriş noktasını
 src/main.jsx: React uygulamasını App bileşeniyle DOM’a bağlayan giriş dosyasıdır.
 ## Elle yazılam kısım
 src/ui/App.jsx: Kayıt, mesaj gönderme ve duygu analizini gösteren tam kullanıcı arayüzünü (yan menü, sohbet listesi, mesaj paneli, duygu kartları) yönetir; API çağrılarını ve UI durumunu burada tutar.
-
+## 
 Dockerfile: Node 18 üzerinde üretim build’i alıp Nginx’e kopyalar; Nginx yapılandırmasını dahil eder.
 
 nginx.conf: Tek sayfa uygulaması yönlendirmesini, statik önbellekleme ve temel güvenlik başlıklarını tanımlar.
@@ -127,7 +127,7 @@ README.md: React Native CLI ile örnek projenin nasıl oluşturulacağını ve b
 package.json: Mobil uygulamanın çalıştırma, test ve lint betiklerini ve React Native ekosistemi bağımlılıklarını listeler.
 ## Elle yazılan kısım
 App.tsx: Mobil istemcide kayıt, mesaj gönderme, periyodik mesaj yenileme ve duygu etiketlerini/renklerini gösteren tüm UI ve iş mantığını içerir.
-
+##
 index.js: React Native uygulamasını AppRegistry üzerinden başlatır.
 
 metro.config.js: Metro paketleyicisi için varsayılan yapılandırmayı birleştirir.

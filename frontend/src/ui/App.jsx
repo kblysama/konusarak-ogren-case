@@ -20,7 +20,7 @@ export default function App(){
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }
   async function messageCheck(){
-    if (messages.length > 0) {load}
+    if (messages.length > 0) {load} console.log("Yeni mesaj var mı kontrol ediliyor...")
   }
   useEffect(()=>{ 
     messageCheck()
@@ -30,6 +30,7 @@ export default function App(){
   useEffect(()=>{ 
     // Her 2 saniyede bir mesajları yenile
     const interval = setInterval(load, 200000)
+    console.log("Mesajlar yenileniyor...")
     return () => clearInterval(interval)
   }, [])
 

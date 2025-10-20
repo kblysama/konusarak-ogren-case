@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -136,7 +137,9 @@ app.MapPost("/message", async (
 app.Run();
 
 public record MessageIn(string Nickname, string Text);
-public record AnalysisResponse(string Sentiment, double Score);
+public record AnalysisResponse(
+    [property: JsonPropertyName("sentiment")] string Sentiment,
+    [property: JsonPropertyName("score")] double Score);
 
 public class User
 {

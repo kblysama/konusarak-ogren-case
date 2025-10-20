@@ -27,13 +27,7 @@ export default function App(){
     scrollToBottom()
   }, [messages])
 
-  useEffect(()=>{ 
-    // Her 2 saniyede bir mesajları yenile
-    const interval = setInterval(load, 200000)
-    console.log("Mesajlar yenileniyor...")
-    return () => clearInterval(interval)
-  }, [])
-
+  
   async function register(){
     if(!nickname.trim()) return
     try {

@@ -40,6 +40,14 @@ export default function App(){
   // Mesaj listesi değişince sadece aşağı kaydır
   useEffect(() => { scrollToBottom() }, [messages])
 
+  useEffect(() => {
+    if (isRegistered) {
+      load()
+    }
+  }, [isRegistered, load])
+
+  useEffect(() => () => abortRef.current?.abort(), [])
+
   // Sekme yeniden görünür olduğunda tek sefer GET
   useEffect(() => {
     function onVisible(){

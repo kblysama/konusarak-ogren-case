@@ -1,38 +1,59 @@
+using System.Net.Http.Json;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var connectionString = builder.Configuration.GetConnectionString("ChatDb") ?? "Data Source=chat.db";
+EnsureDatabaseDirectory(connectionString, builder.Environment.ContentRootPath);
+
 builder.Services.AddDbContext<ChatDb>(opt =>
-    opt.UseSqlite(builder.Configuration.GetConnectionString("ChatDb") ?? "Data Source=chat.db"));
+    opt.UseSqlite(connectionString));
 builder.Services.AddHttpClient();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// CORS desteği ekle
+var allowedOrigins = builder.Configuration
+    .GetSection("Cors:AllowedOrigins")
+    .Get<string[]>()
+    ?.Where(o => !string.IsNullOrWhiteSpace(o))
+    .Select(o => o.Trim().TrimEnd('/'))
+    .ToArray() ?? Array.Empty<string>();
+
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAll", builder =>
+    options.AddPolicy("Frontend", policy =>
     {
-        builder.AllowAnyOrigin()
-               .AllowAnyMethod()
-               .AllowAnyHeader();
+        if (allowedOrigins.Length == 0)
+        {
+            policy.WithOrigins("http://localhost:5173")
+                  .AllowAnyHeader()
+                  .AllowAnyMethod();
+        }
+        else
+        {
+            policy.WithOrigins(allowedOrigins)
+                  .AllowAnyHeader()
+                  .AllowAnyMethod();
+        }
     });
 });
 
 var app = builder.Build();
 
-// CORS kullan
-app.UseCors("AllowAll");
+app.UseCors("Frontend");
 
 // Ensure DB
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<ChatDb>();
-    db.Database.EnsureCreated();
+    db.Database.Migrate();
 }
 
 app.UseSwagger();
 app.UseSwaggerUI();
+
+app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
 app.MapPost("/register", async (ChatDb db, User user) =>
 {
@@ -45,15 +66,21 @@ app.MapPost("/register", async (ChatDb db, User user) =>
     return Results.Ok(new { user.Id, user.Nickname });
 });
 app.MapGet("/messages", async (ChatDb db) =>
-{   
+{
     var list = await db.Messages
         .OrderBy(m => m.CreatedAt)
+        .AsNoTracking()
         .ToListAsync();
     return Results.Ok(list);
 });
 
 
-app.MapPost("/message", async (ChatDb db, IHttpClientFactory httpFactory, MessageIn payload, IConfiguration cfg) =>
+app.MapPost("/message", async (
+    ChatDb db,
+    IHttpClientFactory httpFactory,
+    MessageIn payload,
+    IConfiguration cfg,
+    ILogger<Program> logger) =>
 {
     if (string.IsNullOrWhiteSpace(payload.Nickname) || string.IsNullOrWhiteSpace(payload.Text))
         return Results.BadRequest("nickname and text required");
@@ -65,21 +92,40 @@ app.MapPost("/message", async (ChatDb db, IHttpClientFactory httpFactory, Messag
     if (string.IsNullOrWhiteSpace(aiUrl)) return Results.Problem("AI_URL not configured");
 
     var client = httpFactory.CreateClient();
-    var res = await client.PostAsJsonAsync($"{aiUrl.TrimEnd('/')}", new { data = new[] { payload.Text } });
-    if (!res.IsSuccessStatusCode) return Results.Problem("ai-service error");
-    var aiResponse = await res.Content.ReadFromJsonAsync<GradioResponse>();
-    var ai = new AIResult { 
-        sentiment = aiResponse?.data?[0]?.sentiment ?? "neutral", 
-        score = aiResponse?.data?[0]?.score ?? 0.5 
-    };
+    var target = $"{aiUrl.TrimEnd('/')}/analyze";
+
+    HttpResponseMessage? res;
+    try
+    {
+        res = await client.PostAsJsonAsync(target, new { message = payload.Text });
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "AI service unreachable at {Target}", target);
+        return Results.Problem("ai-service unreachable");
+    }
+
+    if (!res.IsSuccessStatusCode)
+    {
+        var body = await res.Content.ReadAsStringAsync();
+        logger.LogError("AI service returned {Status}: {Body}", res.StatusCode, body);
+        return Results.Problem("ai-service error");
+    }
+
+    var aiResponse = await res.Content.ReadFromJsonAsync<AnalysisResponse>();
+    if (aiResponse is null)
+    {
+        logger.LogError("AI service returned empty body");
+        return Results.Problem("ai-service error");
+    }
 
     var message = new Message
     {
         UserId = user.Id,
         Nickname = user.Nickname,
         Text = payload.Text,
-        Sentiment = ai.sentiment,
-        Score = ai.score,
+        Sentiment = aiResponse.Sentiment,
+        Score = aiResponse.Score,
         CreatedAt = DateTime.UtcNow
     };
     db.Messages.Add(message);
@@ -90,9 +136,7 @@ app.MapPost("/message", async (ChatDb db, IHttpClientFactory httpFactory, Messag
 app.Run();
 
 public record MessageIn(string Nickname, string Text);
-public record AIResult { public string sentiment {get;set;} = "neutral"; public double score {get;set;} = 0; }
-public record GradioResponse { public GradioData[]? data {get;set;} }
-public record GradioData { public string sentiment {get;set;} = "neutral"; public double score {get;set;} = 0; }
+public record AnalysisResponse(string Sentiment, double Score);
 
 public class User
 {
@@ -117,4 +161,32 @@ public class ChatDb : DbContext
     public ChatDb(DbContextOptions<ChatDb> options) : base(options) { }
     public DbSet<User> Users => Set<User>();
     public DbSet<Message> Messages => Set<Message>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<User>()
+            .HasIndex(u => u.Nickname)
+            .IsUnique();
+    }
+}
+
+static void EnsureDatabaseDirectory(string connectionString, string contentRoot)
+{
+    var builder = new SqliteConnectionStringBuilder(connectionString);
+    var dataSource = builder.DataSource;
+
+    if (string.IsNullOrWhiteSpace(dataSource))
+    {
+        return;
+    }
+
+    var fullPath = Path.IsPathRooted(dataSource)
+        ? dataSource
+        : Path.Combine(contentRoot, dataSource);
+
+    var directory = Path.GetDirectoryName(fullPath);
+    if (!string.IsNullOrEmpty(directory))
+    {
+        Directory.CreateDirectory(directory);
+    }
 }

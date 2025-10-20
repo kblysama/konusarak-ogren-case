@@ -1,19 +1,22 @@
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// --------- CONFIG & DB PATH ---------
 var connectionString = builder.Configuration.GetConnectionString("ChatDb") ?? "Data Source=chat.db";
-EnsureDatabaseDirectory(connectionString, builder.Environment.ContentRootPath);
+DbInit.EnsureDatabaseDirectory(connectionString, builder.Environment.ContentRootPath);
 
-builder.Services.AddDbContext<ChatDb>(opt =>
-    opt.UseSqlite(connectionString));
+// --------- SERVICES ---------
+builder.Services.AddDbContext<ChatDb>(opt => opt.UseSqlite(connectionString));
 builder.Services.AddHttpClient();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// CORS (Config: "Cors:AllowedOrigins": ["https://...","http://..."])
 var allowedOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
     .Get<string[]>()
@@ -42,30 +45,35 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+// --------- MIDDLEWARES ---------
 app.UseCors("Frontend");
+app.UseSwagger();
+app.UseSwaggerUI();
 
-// Ensure DB
+// Ensure DB & Migrate
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<ChatDb>();
     db.Database.Migrate();
 }
 
-app.UseSwagger();
-app.UseSwaggerUI();
-
+// --------- ENDPOINTS ---------
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
 app.MapPost("/register", async (ChatDb db, User user) =>
 {
-    if (string.IsNullOrWhiteSpace(user.Nickname)) return Results.BadRequest("nickname required");
+    if (string.IsNullOrWhiteSpace(user.Nickname))
+        return Results.BadRequest("nickname required");
+
     var exists = await db.Users.AnyAsync(u => u.Nickname == user.Nickname);
     if (exists) return Results.Conflict("nickname already exists");
+
     user.CreatedAt = DateTime.UtcNow;
     db.Users.Add(user);
     await db.SaveChangesAsync();
     return Results.Ok(new { user.Id, user.Nickname });
 });
+
 app.MapGet("/messages", async (ChatDb db) =>
 {
     var list = await db.Messages
@@ -75,7 +83,10 @@ app.MapGet("/messages", async (ChatDb db) =>
     return Results.Ok(list);
 });
 
-
+// NOTE: Gradio REST API kullanıyoruz (SDK Gradio).
+// Gradio default endpoint: POST {AI_URL}/api/predict/
+// Body: { "data": ["metin"] }
+// Response: { "data": [ { "sentiment": "...", "score": 0.xx } ], ... }
 app.MapPost("/message", async (
     ChatDb db,
     IHttpClientFactory httpFactory,
@@ -89,34 +100,60 @@ app.MapPost("/message", async (
     var user = await db.Users.FirstOrDefaultAsync(u => u.Nickname == payload.Nickname);
     if (user is null) return Results.NotFound("user not found");
 
-    var aiUrl = cfg["AI_URL"] ?? "";
-    if (string.IsNullOrWhiteSpace(aiUrl)) return Results.Problem("AI_URL not configured");
+    var aiBase = cfg["AI_URL"] ?? "";
+    if (string.IsNullOrWhiteSpace(aiBase)) return Results.Problem("AI_URL not configured");
 
     var client = httpFactory.CreateClient();
-    var target = $"{aiUrl.TrimEnd('/')}/analyze";
+    client.Timeout = TimeSpan.FromSeconds(45);
 
+    var endpoint = $"{aiBase.TrimEnd('/')}/api/predict/";
     HttpResponseMessage? res;
+
     try
     {
-        res = await client.PostAsJsonAsync(target, new { message = payload.Text });
+        var bodyObj = new { data = new object[] { payload.Text } };
+        res = await client.PostAsJsonAsync(endpoint, bodyObj);
     }
     catch (Exception ex)
     {
-        logger.LogError(ex, "AI service unreachable at {Target}", target);
+        logger.LogError(ex, "AI service unreachable at {Endpoint}", endpoint);
         return Results.Problem("ai-service unreachable");
     }
 
+    var raw = await res.Content.ReadAsStringAsync();
+
     if (!res.IsSuccessStatusCode)
     {
-        var body = await res.Content.ReadAsStringAsync();
-        logger.LogError("AI service returned {Status}: {Body}", res.StatusCode, body);
-        return Results.Problem("ai-service error");
+        logger.LogError("AI service returned {Status}: {Body}", res.StatusCode, raw);
+        return Results.Problem($"ai-service error ({(int)res.StatusCode})");
     }
 
-    var aiResponse = await res.Content.ReadFromJsonAsync<AnalysisResponse>();
-    if (aiResponse is null)
+    // Parse Gradio response
+    string sentiment = "neutral";
+    double score = 0.0;
+
+    try
     {
-        logger.LogError("AI service returned empty body");
+        using var doc = JsonDocument.Parse(raw);
+        var root = doc.RootElement;
+        if (root.TryGetProperty("data", out var dataArr) && dataArr.GetArrayLength() > 0)
+        {
+            var first = dataArr[0];
+            if (first.ValueKind == JsonValueKind.Object)
+            {
+                if (first.TryGetProperty("sentiment", out var s)) sentiment = s.GetString() ?? "neutral";
+                if (first.TryGetProperty("score", out var sc)) score = sc.GetDouble();
+            }
+            else if (first.ValueKind == JsonValueKind.String)
+            {
+                // Bazı gradio örnekleri sadece string döndürebilir
+                sentiment = first.GetString() ?? "neutral";
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "AI response parse error. Raw: {Raw}", raw);
         return Results.Problem("ai-service error");
     }
 
@@ -125,10 +162,11 @@ app.MapPost("/message", async (
         UserId = user.Id,
         Nickname = user.Nickname,
         Text = payload.Text,
-        Sentiment = aiResponse.Sentiment,
-        Score = aiResponse.Score,
+        Sentiment = sentiment,
+        Score = score,
         CreatedAt = DateTime.UtcNow
     };
+
     db.Messages.Add(message);
     await db.SaveChangesAsync();
     return Results.Ok(message);
@@ -136,7 +174,10 @@ app.MapPost("/message", async (
 
 app.Run();
 
+// --------- TYPES (Top-level KODDAN SONRA) ---------
 public record MessageIn(string Nickname, string Text);
+
+// (FastAPI kullansaydın bu response'u kullanırdık. Gradio için yukarıda JSON parse yapıyoruz)
 public record AnalysisResponse(
     [property: JsonPropertyName("sentiment")] string Sentiment,
     [property: JsonPropertyName("score")] double Score);
@@ -173,23 +214,24 @@ public class ChatDb : DbContext
     }
 }
 
-static void EnsureDatabaseDirectory(string connectionString, string contentRoot)
+// ------- STATIC HELPER (Artık type member; CS8803’i tetiklemez) -------
+public static class DbInit
 {
-    var builder = new SqliteConnectionStringBuilder(connectionString);
-    var dataSource = builder.DataSource;
-
-    if (string.IsNullOrWhiteSpace(dataSource))
+    public static void EnsureDatabaseDirectory(string connectionString, string contentRoot)
     {
-        return;
-    }
+        var builder = new SqliteConnectionStringBuilder(connectionString);
+        var dataSource = builder.DataSource;
 
-    var fullPath = Path.IsPathRooted(dataSource)
-        ? dataSource
-        : Path.Combine(contentRoot, dataSource);
+        if (string.IsNullOrWhiteSpace(dataSource)) return;
 
-    var directory = Path.GetDirectoryName(fullPath);
-    if (!string.IsNullOrEmpty(directory))
-    {
-        Directory.CreateDirectory(directory);
+        var fullPath = Path.IsPathRooted(dataSource)
+            ? dataSource
+            : Path.Combine(contentRoot, dataSource);
+
+        var directory = Path.GetDirectoryName(fullPath);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
     }
 }

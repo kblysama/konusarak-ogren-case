@@ -44,7 +44,13 @@ app.MapPost("/register", async (ChatDb db, User user) =>
     await db.SaveChangesAsync();
     return Results.Ok(new { user.Id, user.Nickname });
 });
-
+app.MapGet("/messages", async (ChatDb db) =>
+{
+    var list = await db.Messages
+        .OrderBy(m => m.CreatedAt)
+        .ToListAsync();
+    return Results.Ok(list);
+});
 
 
 app.MapPost("/message", async (ChatDb db, IHttpClientFactory httpFactory, MessageIn payload, IConfiguration cfg) =>
